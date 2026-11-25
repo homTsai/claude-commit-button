@@ -14,6 +14,7 @@ Claude Code mod：Claude 的回覆裡有「建議的 commit message」時，在�
   - **Haiku**（預設）：呼叫 Claude Haiku，費用會算進 session 的 `/cost`。
   - **Cursor**：執行本機的 Cursor CLI（`cursor-agent -p --mode ask --output-format text --trust --model auto`），固定使用 auto 模型，不受你在 Cursor 裡選的模型影響；prompt 從 stdin 傳入。需先安裝 Cursor CLI 並執行 `cursor-agent login`。一次約需 10–15 秒。
   - **切換**：按按鈕列上的「改用 Cursor／改用 Haiku」，或在設定（`/config`）改 commit-button 的「產生 commit 訊息的工具」（`messageGenerator`：`haiku` 或 `cursor`）。設定會保存，之後的 session 也沿用。
+  - **安裝偵測**：每個 session 開始時用 `where.exe`（macOS／Linux 用 `which`）檢查一次有沒有安裝 cursor-agent，不連網、也不檢查登入。沒安裝時不顯示「改用 Cursor」；如果設定已是 `cursor`，按鈕列改成顯示「找不到 cursor-agent」，只提供「改用 Haiku」。按下產生時會再偵測一次，session 中途才安裝也能使用。沒登入或額度用完等錯誤，會在產生失敗時顯示在 toast。
 - **續接對話**：session 開始時，會從最近幾則訊息找回尚未處理的建議訊息。
 - **避免重複詢問**：Claude 能使用桌面版的 `wrap_up` 工具時，mod 會在 system prompt 補一段說明，請 Claude 不要在「下一步」提示框再問要不要 commit。這是給模型的指示，大多數時候會遵守，但不保證每次都不問。
 

@@ -9,6 +9,9 @@ export type Changes = { session: string[]; others: string[] }
 
 export type Busy = 'commit' | 'generate' | null
 
+/** session 開始時偵測 cursor-agent 的結果：argv 為啟動它的指令（含參數），找不到時為 null */
+export type CursorProbe = { argv: string[] | null }
+
 declare module 'claude-code' {
   interface PluginState {
     'commit-button': {
@@ -19,6 +22,8 @@ declare module 'claude-code' {
       /** 主回合開始時已存在的未提交變更（相對路徑），用來找出 Bash 等方式改到的檔案 */
       baseline: string[] | null
       changes: Changes | null
+      /** cursor-agent 偵測結果；null 表示還沒偵測 */
+      cursor: CursorProbe | null
     }
   }
 }

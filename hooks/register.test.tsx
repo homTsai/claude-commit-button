@@ -1,4 +1,5 @@
 import { expect, test } from 'claude-code/testing'
+import type { TestBody } from 'claude-code/testing'
 
 import { CURSOR_ARGS, cleanModelMessage, cursorArgv, parseStatus, splitChanges, toRepoPath } from './register'
 
@@ -289,5 +290,72 @@ test('band 上的切換按鈕把設定改成另一個產生器', async ($, on) =
   expect((await ui.find({ type: 'Button', key: 'generate' }))?.text).toContain('Haiku')
   await ui.press({ key: 'toggle-generator' })
   expect(sets).toEqual([{ key: 'commit-button.messageGenerator', value: 'cursor' }])
+  await ui.unmount()
+})
+
+/** 偵測 cursor-agent 的測試：where.exe 依 isInstalled 回應，git 交給 fakeGit */
+function probeRun(git: ReturnType<typeof fakeGit>, isInstalled: boolean) {
+  const runs: string[] = []
+  const handler = (_: unknown, e: { argv: readonly string[]; init?: { stdin?: string } }) => {
+    if (e.argv[0] === 'git') return git.handler(_, e)
+    runs.push(e.argv.join(' '))
+    const isWhere = e.argv[0] === 'where.exe'
+    const stdout = isWhere && isInstalled ? 'C:/cursor-agent/cursor-agent.cmd\n' : ''
+    return { value: { exitCode: isWhere && !isInstalled ? 1 : 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  }
+  return { runs, handler }
+}
+
+async function startWithNewFile($: Parameters<TestBody>[0], repo: { status: string }) {
+  await $.session.start({ cwd: 'D:/repo', surface: 'desktop', isInteractive: true })
+  await $.turn.start({ text: 'x', turnId: 't' })
+  repo.status = ' M old.ts\0?? new.ts\0'
+  await $.turn.complete(turn('好了。'))
+}
+
+test('session 開始時偵測 cursor-agent；沒安裝時不顯示「改用 Cursor」', async ($, on) => {
+  const repo = { status: ' M old.ts\0' }
+  const run = probeRun(fakeGit(repo), false)
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.messages', () => ({ value: [] as never }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', run.handler)
+
+  await startWithNewFile($, repo)
+  expect(run.runs).toContain('where.exe cursor-agent')
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Button', key: 'generate' }))?.text).toContain('Haiku')
+  expect(await ui.find({ type: 'Button', key: 'toggle-generator' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('已安裝 cursor-agent 時顯示「改用 Cursor」', async ($, on) => {
+  const repo = { status: ' M old.ts\0' }
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.messages', () => ({ value: [] as never }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', probeRun(fakeGit(repo), true).handler)
+
+  await startWithNewFile($, repo)
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Button', key: 'toggle-generator' }))?.text).toContain('改用 Cursor')
+  await ui.unmount()
+})
+
+test('設定為 cursor 但找不到 cursor-agent 時，只提供「改用 Haiku」', { options: { messageGenerator: 'cursor' } }, async ($, on) => {
+  const repo = { status: ' M old.ts\0' }
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('session.messages', () => ({ value: [] as never }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', probeRun(fakeGit(repo), false).handler)
+
+  await startWithNewFile($, repo)
+  const ui = await $.ui.mount(BAND)
+  expect(await ui.find({ type: 'Button', key: 'generate' })).toBeUndefined()
+  expect((await ui.find({ type: 'Button', key: 'toggle-generator' }))?.text).toContain('改用 Haiku')
+  expect((await ui.find({ type: 'Text', text: /找不到 cursor-agent/ }))?.text).toContain('1 個檔案')
   await ui.unmount()
 })

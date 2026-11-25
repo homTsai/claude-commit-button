@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { Hook, Register, RenderChildren } from 'claude-code'
+import type { Hook, Register, RenderChildren, RenderNode } from 'claude-code'
 
-import type { Busy, Changes, Generator, Pending } from '../types'
+import type { Busy, Changes, CursorProbe, Generator, Pending } from '../types'
 
 /**
  * commit-button：Claude 的回覆含「建議的 commit message」程式碼區塊時，
@@ -20,6 +20,7 @@ const busy = atom({ plugin: 'commit-button', key: 'busy' } as const, null)
 const touched = atom({ plugin: 'commit-button', key: 'touched' } as const, [])
 const baseline = atom({ plugin: 'commit-button', key: 'baseline' } as const, null)
 const changes = atom({ plugin: 'commit-button', key: 'changes' } as const, null)
+const cursor = atom({ plugin: 'commit-button', key: 'cursor' } as const, null)
 
 /** 產生 commit 訊息用的模型（產生器為 haiku 時） */
 export const MESSAGE_MODEL = 'haiku'
@@ -207,20 +208,41 @@ export function cursorArgv(whereOutput: string | null): string[] | null {
   return exe ? [exe, ...CURSOR_ARGS] : null
 }
 
+/**
+ * 找出啟動 cursor-agent 的 argv，找不到就回 null。只查有沒有安裝（不連網、不查登入），
+ * 先試 Windows 的 where.exe，沒有就試 which；兩者都無法執行時無從判斷，直接用 cursor-agent。
+ */
+async function probeCursor($: Ctx): Promise<CursorProbe> {
+  const where = await $.process.run(['where.exe', 'cursor-agent']).catch(() => null)
+  if (where) return { argv: cursorArgv(where.exitCode === 0 ? where.stdout : '') }
+  const which = await $.process.run(['which', 'cursor-agent']).catch(() => null)
+  if (which) return { argv: cursorArgv(which.exitCode === 0 ? which.stdout : '') }
+  return { argv: cursorArgv(null) }
+}
+
+/** 偵測並記下結果，給 band 決定要不要顯示 Cursor 相關按鈕 */
+async function detectCursor($: Ctx): Promise<CursorProbe> {
+  const probe = await probeCursor($)
+  await update($, cursor, (): CursorProbe => probe)
+  return probe
+}
+
+const CURSOR_HINT = '（可執行 cursor-agent login，或改用 Haiku）'
+
 /** 用本機的 Cursor CLI 寫訊息：prompt 從 stdin 傳入（diff 很長時不受命令列長度限制） */
 async function askCursor($: Ctx, prompt: string): Promise<string | { error: string }> {
-  const where = await $.process.run(['where.exe', 'cursor-agent']).catch(() => null)
-  const argv = cursorArgv(where === null ? null : where.exitCode === 0 ? where.stdout : '')
-  if (!argv) return { error: '找不到 cursor-agent：請先安裝 Cursor CLI 並執行 cursor-agent login' }
+  // 按下產生時重新偵測一次，session 中途才安裝或移除也能反映
+  const { argv } = await detectCursor($)
+  if (!argv) return { error: '找不到 cursor-agent：請先安裝 Cursor CLI，或改用 Haiku' }
   const input = `${MESSAGE_SYSTEM}\nDo not use any tools or read any files: everything you need is below.\n\n${prompt}\n`
   let result: Awaited<ReturnType<Ctx['process']['run']>>
   try {
     result = await $.process.run(argv, { stdin: input, timeoutMs: CURSOR_TIMEOUT_MS })
   } catch (err) {
     // 無法啟動（沒安裝）或逾時
-    return { error: `執行 cursor-agent 失敗：${firstLine(err instanceof Error ? err.message : String(err), 120)}` }
+    return { error: `執行 cursor-agent 失敗：${firstLine(err instanceof Error ? err.message : String(err), 120)}${CURSOR_HINT}` }
   }
-  if (result.exitCode !== 0) return { error: `cursor-agent 失敗：${firstError(result.stderr, result.stdout)}` }
+  if (result.exitCode !== 0) return { error: `cursor-agent 失敗：${firstError(result.stderr, result.stdout)}${CURSOR_HINT}` }
   const message = cleanModelMessage(result.stdout)
   return message ? message : { error: '產生 commit 訊息失敗：cursor-agent 沒有回覆內容' }
 }
@@ -288,6 +310,8 @@ export const register: Register = (on, options) => {
       const message = lastAssistant ? extractCommitMessage(lastAssistant.text) : null
       await update($, pending, (): Pending | null => (message ? { message, source: 'claude' } : null))
     }
+    // 每個 session（含 mod 重新載入）偵測一次 cursor-agent 是否安裝；失敗不影響 session
+    await detectCursor($).catch(() => null)
     return started
   })
 
@@ -454,18 +478,38 @@ export const register: Register = (on, options) => {
     )
 
     if (current === null) {
-      return row(
-        <Text dimColor>本 session 有 {sessionCount} 個檔案未 commit{otherCount ? `（另有 ${otherCount} 個其他變更）` : ''}</Text>,
-        <>
-          <Button key="generate" variant="primary" onPress={generate}>
-            {state === 'generate' ? `${GENERATOR_NAMES[generator]} 產生中…` : `用 ${GENERATOR_NAMES[generator]} 產生 commit 訊息`}
-          </Button>
+      const probe: CursorProbe | null = await read($, cursor)
+      // 還沒偵測完（null）時先當作可用，避免按鈕閃動；確定找不到才改變按鈕
+      const isCursorMissing = probe !== null && probe.argv === null
+      const summary = `本 session 有 ${sessionCount} 個檔案未 commit${otherCount ? `（另有 ${otherCount} 個其他變更）` : ''}`
+
+      if (generator === 'cursor' && isCursorMissing) {
+        return row(
+          <Text dimColor>{`${summary}・找不到 cursor-agent`}</Text>,
+          <>
+            <Button key="toggle-generator" variant="primary" onPress={toggle}>
+              改用 Haiku
+            </Button>
+            {skip}
+          </>,
+        )
+      }
+
+      const actions: RenderNode[] = [
+        <Button key="generate" variant="primary" onPress={generate}>
+          {state === 'generate' ? `${GENERATOR_NAMES[generator]} 產生中…` : `用 ${GENERATOR_NAMES[generator]} 產生 commit 訊息`}
+        </Button>,
+      ]
+      // 找不到 cursor-agent 時不提供切到 Cursor
+      if (!(other === 'cursor' && isCursorMissing)) {
+        actions.push(
           <Button key="toggle-generator" onPress={toggle}>
             {`改用 ${GENERATOR_NAMES[other]}`}
-          </Button>
-          {skip}
-        </>,
-      )
+          </Button>,
+        )
+      }
+      actions.push(skip)
+      return row(<Text dimColor>{summary}</Text>, <>{actions}</>)
     }
 
     const label = current.source === 'model' ? `${GENERATOR_NAMES[current.by ?? 'haiku']} 建議 commit：` : '建議 commit：'
