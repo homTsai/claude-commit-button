@@ -2,6 +2,8 @@
 
 Claude Code mod：Claude 的回覆裡有「建議的 commit message」時，在輸入框上方顯示一列按鈕，按一下就在本機執行 `git add -A` 和 `git commit`，不經過模型，也不花 token。
 
+![Claude 回覆結尾附上建議的 commit message，輸入框上方出現「建議 commit」按鈕列，含 Commit 與略過按鈕](docs/screenshot.webp)
+
 ## 功能
 
 - **自動附上建議訊息**：mod 會在 system prompt 補一段要求：當回合中修改了 git repository 的檔案、而且工作告一段落時，請 Claude 在回覆結尾附上「commit message」字樣，後面接一個只含訊息本身的 ``` 程式碼區塊。所以不需要在自己的 CLAUDE.md 另外設定，安裝後就能觸發按鈕。訊息語言與格式會跟隨專案或使用者的慣例。這是給模型的指示，Claude 大多數時候會照做，但不保證每次都附上。
@@ -28,9 +30,9 @@ Claude Code mod：Claude 的回覆裡有「建議的 commit message」時，在�
 
 出現 `Add marketplace?` 時回答 `y`，再選擇安裝範圍（建議選 user），安裝完成後立即生效。
 
-或在 shell 執行：
+或在 shell 執行（Windows PowerShell 與 macOS／Linux 的 zsh、bash 都一樣）：
 
-```powershell
+```bash
 claude plugin install commit-button --marketplace homTsai/claude-commit-button
 ```
 
@@ -40,19 +42,29 @@ claude plugin install commit-button --marketplace homTsai/claude-commit-button
 
 把這個資料夾放在固定位置，例如 `~/.claude/mods/commit-button`，然後在 `~/.claude/settings.json` 的 `env` 加上：
 
+Windows：
+
 ```json
 "CLAUDE_CODE_PLUGIN_DIRS": "C:\\Users\\<你>\\.claude\\mods\\commit-button"
 ```
 
-有多個 mod 時，用 `;` 分隔多個路徑（macOS／Linux 用 `:`）。設定完成後，要重新啟動 app 或開新 session 才會載入。
+macOS：
+
+```json
+"CLAUDE_CODE_PLUGIN_DIRS": "/Users/<你>/.claude/mods/commit-button"
+```
+
+Linux 的路徑是 `/home/<你>/.claude/mods/commit-button`。請寫完整路徑，不要用 `~`。有多個 mod 時，Windows 用 `;` 分隔多個路徑，macOS／Linux 用 `:`，例如 `"/Users/<你>/.claude/mods/commit-button:/Users/<你>/.claude/mods/other-mod"`。設定完成後，要重新啟動 app 或開新 session 才會載入。
 
 ## 開發
 
-```powershell
+在 repo 根目錄執行（Windows PowerShell 與 macOS／Linux 的 shell 都一樣）：
+
+```bash
 claude plugin validate .
 ```
 
-```powershell
+```bash
 claude plugin test .
 ```
 
