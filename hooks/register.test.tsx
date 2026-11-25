@@ -1,5 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 
+import { cleanModelMessage, parseStatus, splitChanges, toRepoPath } from './register'
+
 const BAND = { plugin: 'commit-button', surface: 'desktop', component: 'AbovePrompt', props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 4, bodyColumns: 100, scroll: { offset: 0, bodyRows: 4 }, view: {} } } as const
 
 const ANSWER = [
@@ -14,27 +16,75 @@ const ANSWER = [
   '[Context Tip: ...]',
 ].join('\n')
 
+const USAGE = { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
+
 function turn(answer: string) {
   return { answer, durationMs: 1, isAborted: false, turnId: 't', reason: 'answer' as const }
 }
 
-test('回覆含建議訊息時顯示按鈕，按下後 add + commit 並收起', async ($, on) => {
-  const calls: Array<{ argv: readonly string[]; stdin?: string }> = []
-  on('turn.complete', (_, e) => ({ text: e.answer }))
-  on('process.run', (_, e) => {
-    calls.push({ argv: e.argv, stdin: e.init?.stdin })
-    const stdout = e.argv[1] === 'status' ? ' M a.ts\n' : e.argv[1] === 'log' ? 'abc1234\n' : ''
+/** 假的 git：依子指令回應，status 的內容可在測試中途改 */
+function fakeGit(repo: { status: string }) {
+  const calls: Array<{ argv: string; stdin?: string }> = []
+  const handler = (_: unknown, e: { argv: readonly string[]; init?: { stdin?: string } }) => {
+    calls.push({ argv: e.argv.join(' '), stdin: e.init?.stdin })
+    const sub = e.argv.slice(1).find(a => !a.startsWith('-')) ?? ''
+    const isOneLog = e.argv.includes('-1')
+    const stdout =
+      sub === 'rev-parse' ? 'D:/repo\n'
+      : sub === 'status' ? repo.status
+      : sub === 'log' ? (isOneLog ? 'abc1234\n' : 'feat: 舊的訊息\n')
+      : sub === 'diff' ? (e.argv.includes('--stat') ? ' new.ts | 3 +++\n' : 'diff --git a/new.ts b/new.ts\n+hello\n')
+      : ''
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
+  }
+  return { calls, handler }
+}
+
+test('解析 git status -z：一般、未追蹤、改名', () => {
+  expect(parseStatus(' M a.ts\0?? dir/b.ts\0R  new.ts\0old.ts\0')).toEqual([
+    { code: ' M', path: 'a.ts' },
+    { code: '??', path: 'dir/b.ts' },
+    { code: 'R ', path: 'new.ts', orig: 'old.ts' },
+  ])
+  expect(parseStatus('')).toEqual([])
+})
+
+test('Windows 絕對路徑轉成 repo 相對路徑，不分大小寫', () => {
+  expect(toRepoPath('D:/repo', 'd:\\Repo\\src\\a.ts')).toBe('src/a.ts')
+  expect(toRepoPath('D:/repo', 'D:\\other\\a.ts')).toBeNull()
+  expect(toRepoPath('/home/u/repo', '/home/u/repo/a.ts')).toBe('a.ts')
+})
+
+test('依本 session 的檔案分組，改名的兩個路徑一起歸類', () => {
+  const entries = parseStatus(' M a.ts\0 M b.ts\0R  c2.ts\0c.ts\0')
+  expect(splitChanges(entries, ['a.ts', 'c.ts'])).toEqual({ session: ['a.ts', 'c2.ts', 'c.ts'], others: ['b.ts'] })
+})
+
+test('去掉模型多包的程式碼區塊', () => {
+  expect(cleanModelMessage('```text\nfeat: x\n\n- y\n```')).toBe('feat: x\n\n- y')
+  expect(cleanModelMessage('  fix: z \n')).toBe('fix: z')
+})
+
+test('回覆含建議訊息時顯示按鈕，按下後 add + commit 並收起', async ($, on) => {
+  const git = fakeGit({ status: ' M a.ts\0' })
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', git.handler)
   on('ui.toast', () => ({ value: undefined }))
 
   await $.turn.complete(turn(ANSWER))
   const ui = await $.ui.mount(BAND)
   expect((await ui.find({ type: 'Text', text: /DPH-111/ }))?.text).toContain('feat(agent)')
 
+  git.calls.length = 0
   await ui.press({ key: 'commit' })
-  expect(calls.map(c => c.argv.join(' '))).toEqual(['git status --porcelain', 'git add -A', 'git commit -F -', 'git log -1 --format=%h'])
-  expect(calls[2]?.stdin).toBe('feat(agent): Agent 憑證支援重新命名 (DPH-111)\n')
+  expect(git.calls.map(c => c.argv)).toEqual([
+    'git rev-parse --show-toplevel',
+    'git status --porcelain -z --untracked-files=all',
+    'git add -A',
+    'git commit -F -',
+    'git log -1 --format=%h',
+  ])
+  expect(git.calls[3]?.stdin).toBe('feat(agent): Agent 憑證支援重新命名 (DPH-111)\n')
   expect(await ui.find({ type: 'Button' })).toBeUndefined()
   await ui.unmount()
 })
@@ -57,14 +107,16 @@ test('system prompt 一律要求固定格式；有 wrap_up 工具時才加不重
 
 test('英文格式的建議訊息也能顯示按鈕', async ($, on) => {
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', fakeGit({ status: ' M a.ts\0' }).handler)
   await $.turn.complete(turn('Done.\n\nSuggested commit message:\n\n```\nfix: handle empty input\n```\n'))
   const ui = await $.ui.mount(BAND)
   expect((await ui.find({ type: 'Text', text: /fix: handle empty input/ }))?.text).toContain('fix:')
   await ui.unmount()
 })
 
-test('沒有建議訊息的回合不顯示按鈕', async ($, on) => {
+test('沒有建議訊息、本 session 也沒改檔案時不顯示按鈕', async ($, on) => {
   on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', fakeGit({ status: ' M someone-else.ts\0' }).handler)
   await $.turn.complete(turn('只是一般回答，沒有 commit。'))
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Button' })).toBeUndefined()
@@ -72,16 +124,70 @@ test('沒有建議訊息的回合不顯示按鈕', async ($, on) => {
 })
 
 test('沒有變更時不 commit', async ($, on) => {
-  const argvs: string[] = []
+  const git = fakeGit({ status: '' })
   on('turn.complete', (_, e) => ({ text: e.answer }))
-  on('process.run', (_, e) => {
-    argvs.push(e.argv.join(' '))
-    return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-  })
+  on('process.run', git.handler)
   on('ui.toast', () => ({ value: undefined }))
   await $.turn.complete(turn(ANSWER))
   const ui = await $.ui.mount(BAND)
+  git.calls.length = 0
   await ui.press({ key: 'commit' })
-  expect(argvs).toEqual(['git status --porcelain'])
+  expect(git.calls.map(c => c.argv)).toEqual(['git rev-parse --show-toplevel', 'git status --porcelain -z --untracked-files=all'])
+  await ui.unmount()
+})
+
+test('repo 另有其他變更時，可以只提交本 session 用 Edit 改過的檔案', async ($, on) => {
+  const git = fakeGit({ status: ' M a.ts\0 M other.ts\0' })
+  on('tool.call', () => ({ result: {} as never }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', git.handler)
+  on('ui.toast', () => ({ value: undefined }))
+
+  await $.tool.call({ tool: 'Edit', tool_use_id: 'u1', file_path: 'D:\\repo\\a.ts', old_string: 'x', new_string: 'y' } as never)
+  await $.turn.complete(turn(ANSWER))
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Button', key: 'commit' }))?.text).toContain('全部 Commit（2）')
+
+  git.calls.length = 0
+  await ui.press({ key: 'commit-session' })
+  const argvs = git.calls.map(c => c.argv)
+  expect(argvs).toContain('git --literal-pathspecs add -A -- a.ts')
+  expect(argvs).toContain('git --literal-pathspecs commit -F - -- a.ts')
+  expect(argvs).not.toContain('git add -A')
+  expect(await ui.find({ type: 'Button' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('沒有建議訊息但本 session 有新變更時，可請 Haiku 產生訊息', async ($, on) => {
+  const repo = { status: ' M old.ts\0' }
+  const git = fakeGit(repo)
+  const asked: Array<{ model: string; prompt: string }> = []
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', git.handler)
+  on('ui.toast', () => ({ value: undefined }))
+  on('model.complete', (_, e) => {
+    asked.push({ model: e.model, prompt: e.prompt })
+    return { value: { isAnswered: true as const, text: '```\nfeat: 新增 new.ts\n```', usage: USAGE } }
+  })
+
+  await $.turn.start({ text: '幫我加檔案', turnId: 't' })
+  repo.status = ' M old.ts\0?? new.ts\0' // 回合中以 Bash 新增了 new.ts
+  await $.turn.complete(turn('好了，已新增。'))
+
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Text', text: /未 commit/ }))?.text).toContain('1 個檔案')
+  await ui.press({ key: 'generate' })
+
+  expect(asked[0]?.model).toBe('haiku')
+  expect(asked[0]?.prompt).toContain('new.ts')
+  expect(asked[0]?.prompt).toContain('feat: 舊的訊息')
+  expect((await ui.find({ type: 'Text', text: /Haiku/ }))?.text).toContain('Haiku')
+  expect((await ui.find({ type: 'Text', text: /新增 new\.ts/ }))?.text).toContain('feat:')
+
+  git.calls.length = 0
+  await ui.press({ key: 'commit-session' })
+  expect(git.calls.map(c => c.argv)).toContain('git --literal-pathspecs commit -F - -- new.ts')
+  expect(git.calls.find(c => c.argv.includes('commit'))?.stdin).toBe('feat: 新增 new.ts\n')
   await ui.unmount()
 })
