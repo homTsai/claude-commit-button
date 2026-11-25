@@ -4,6 +4,7 @@ Claude Code mod：Claude 的回覆裡有「建議的 commit message」時，在�
 
 ## 功能
 
+- **自動附上建議訊息**：mod 會在 system prompt 補一段要求：當回合中修改了 git repository 的檔案、而且工作告一段落時，請 Claude 在回覆結尾附上「commit message」字樣，後面接一個只含訊息本身的 ``` 程式碼區塊。所以不需要在自己的 CLAUDE.md 另外設定，安裝後就能觸發按鈕。訊息語言與格式會跟隨專案或使用者的慣例。這是給模型的指示，Claude 大多數時候會照做，但不保證每次都附上。
 - **偵測建議訊息**：每次主對話回合結束時，從回覆中找出「commit message」字樣之後的第一個 ``` 程式碼區塊，把裡面的內容當成 commit message。
 - **輸入框上方的按鈕列**：顯示「建議 commit：<第一行> [Commit] [略過]」。
   - **Commit**：依序執行 `git status --porcelain`、`git add -A`、`git commit -F -`，完成後用 toast 顯示新的 commit hash。沒有變更時不會 commit。

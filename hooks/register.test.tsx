@@ -39,14 +39,28 @@ test('回覆含建議訊息時顯示按鈕，按下後 add + commit 並收起', 
   await ui.unmount()
 })
 
-test('有 wrap_up 工具時在 system prompt 最後加上 commit 政策', async ($, on) => {
+test('system prompt 一律要求固定格式；有 wrap_up 工具時才加不重複詢問的規則', async ($, on) => {
   on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'base', scope: 'shared' as const }] }))
   const base = { model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['desktop'] as const, outputStyle: null, traits: [] }
+
   const withTool = await $.prompt.compose({ ...base, tools: ['Bash', 'mcp__ccd_turn__wrap_up'] })
   expect(withTool.sections.map(s => s.id)).toEqual(['intro', 'commit-button:policy'])
   expect(withTool.sections[1]?.scope).toBe('session')
+  expect(withTool.sections[1]?.text).toContain('code block that holds only the message')
+  expect(withTool.sections[1]?.text).toContain('mcp__ccd_turn__wrap_up')
+
   const without = await $.prompt.compose({ ...base, tools: ['Bash'] })
-  expect(without.sections.map(s => s.id)).toEqual(['intro'])
+  expect(without.sections.map(s => s.id)).toEqual(['intro', 'commit-button:policy'])
+  expect(without.sections[1]?.text).toContain('code block that holds only the message')
+  expect(without.sections[1]?.text).not.toContain('mcp__ccd_turn__wrap_up')
+})
+
+test('英文格式的建議訊息也能顯示按鈕', async ($, on) => {
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  await $.turn.complete(turn('Done.\n\nSuggested commit message:\n\n```\nfix: handle empty input\n```\n'))
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Text', text: /fix: handle empty input/ }))?.text).toContain('fix:')
+  await ui.unmount()
 })
 
 test('沒有建議訊息的回合不顯示按鈕', async ($, on) => {

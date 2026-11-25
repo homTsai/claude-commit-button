@@ -39,22 +39,29 @@ function firstError(stderr: string, stdout: string): string {
 
 const WRAP_UP_TOOL = 'mcp__ccd_turn__wrap_up'
 
-export const COMMIT_POLICY = {
-  id: 'commit-button:policy',
-  scope: 'session',
-  text: [
-    '# commit-button mod',
-    'The commit-button mod is installed: when your answer contains a suggested commit message in a ``` code block after the words "commit message", the app shows a Commit button above the prompt that runs git add -A and git commit locally.',
-    `So when you suggest a commit message, do not ask whether to commit in ${WRAP_UP_TOOL}: no commit question in \`ask\`, and no commit button (\`action: "commit"\` or a reply label about committing) in \`actions\`. Keep the commit message in your closing message as usual. Use \`ask\` only for a different decision the user still has to make; with none, send the recap alone.`,
-  ].join('\n'),
-} as const
+const POLICY_ID = 'commit-button:policy'
+
+const FORMAT_RULES = [
+  '# commit-button mod',
+  'The commit-button mod is installed: when your final answer contains a suggested commit message in the format below, a Commit button appears above the prompt that runs `git add -A` and `git commit` locally, without another model turn.',
+  'When a turn changed files in a git repository and that piece of work is finished (a feature done, a fix verified, a refactor complete), end your final answer with a suggested commit message in exactly this format: a line containing the words "commit message" (for example "Suggested commit message:", or its equivalent in the language you are answering in, keeping the English words "commit message"), followed by a ``` code block that holds only the message itself: no command, no quotes, no attribution trailers. Write it in the language and convention the project or the user prefers.',
+  'Skip it when nothing changed, when the work is unfinished or failing, or when you already committed it yourself.',
+].join('\n')
+
+const WRAP_UP_RULES = `When you suggest a commit message, do not also ask whether to commit in ${WRAP_UP_TOOL}: no commit question in \`ask\`, and no commit button (\`action: "commit"\` or a reply label about committing) in \`actions\`. Use \`ask\` only for a different decision the user still has to make; with none, send the recap alone.`
+
+/** 依本回合可用的工具組出 system prompt 段落：格式要求一律加，wrap_up 的規則只在有該工具時加 */
+export function commitPolicy(tools: readonly string[]) {
+  const text = tools.includes(WRAP_UP_TOOL) ? `${FORMAT_RULES}\n${WRAP_UP_RULES}` : FORMAT_RULES
+  return { id: POLICY_ID, scope: 'session', text } as const
+}
 
 export const register: Register = on => {
-  // 有 wrap_up 工具時，請 Claude 不要在下一步提示框重複問 commit（改由本 mod 的按鈕處理）
+  // 請 Claude 以固定格式附上建議的 commit message（不依賴使用者自己的 CLAUDE.md），
+  // 並在桌面版不要於下一步提示框重複問 commit
   on('prompt.compose', async ($, e, next) => {
     const result = await next(e)
-    if (!e.tools.includes(WRAP_UP_TOOL)) return result
-    return { sections: [...result.sections.filter(s => s.id !== COMMIT_POLICY.id), COMMIT_POLICY] }
+    return { sections: [...result.sections.filter(s => s.id !== POLICY_ID), commitPolicy(e.tools)] }
   })
 
   // 續接舊對話時，從最近的回覆找回建議訊息
