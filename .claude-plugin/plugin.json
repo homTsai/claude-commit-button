@@ -1,0 +1,10 @@
+{
+  "name": "commit-button",
+  "version": "0.1.0",
+  "description": "在提示框上方顯示 Claude 建議的 commit message，按一下即 git add -A + git commit，不經過模型",
+  "types": "./types/index.d.ts",
+  "license": "MIT",
+  "author": {
+    "name": "homTsai"
+  }
+}

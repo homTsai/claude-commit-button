@@ -1,0 +1,13 @@
+{
+  "name": "claude-commit-button",
+  "description": "Claude Code mod：一鍵套用 Claude 建議的 commit message",
+  "owner": {
+    "name": "homTsai"
+  },
+  "plugins": [
+    {
+      "name": "commit-button",
+      "source": "./"
+    }
+  ]
+}
