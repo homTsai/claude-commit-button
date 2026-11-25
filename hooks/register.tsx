@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { Hook, Register } from 'claude-code'
+import type { Hook, Register, RenderChildren } from 'claude-code'
 
 import type { Busy, Changes, Pending } from '../types'
 
@@ -378,16 +378,27 @@ export const register: Register = on => {
       </Button>
     )
 
+    /** 文字靠左、按鈕靠右；視窗太窄時文字先縮，按鈕保持完整 */
+    const row = (info: RenderChildren, actions: RenderChildren) => (
+      <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1}>
+        <Box flexGrow={1} flexShrink={1}>
+          {info}
+        </Box>
+        <Box flexShrink={0} columnGap={1}>
+          {actions}
+        </Box>
+      </Box>
+    )
+
     if (current === null) {
-      return (
-        <Box>
-          <Text dimColor>本 session 有 {sessionCount} 個檔案未 commit{otherCount ? `（另有 ${otherCount} 個其他變更）` : ''}：</Text>
+      return row(
+        <Text dimColor>本 session 有 {sessionCount} 個檔案未 commit{otherCount ? `（另有 ${otherCount} 個其他變更）` : ''}</Text>,
+        <>
           <Button key="generate" variant="primary" onPress={generate}>
             {state === 'generate' ? '產生中…' : '產生 commit 訊息'}
           </Button>
-          <Text> </Text>
           {skip}
-        </Box>
+        </>,
       )
     }
 
@@ -395,16 +406,17 @@ export const register: Register = on => {
     const isMixed = sessionCount > 0 && otherCount > 0
     const committing = state === 'commit'
 
-    return (
-      <Box>
+    return row(
+      <>
         <Text dimColor>{label}</Text>
-        <Text>{firstLine(current.message)} </Text>
+        <Text>{firstLine(current.message)}</Text>
+      </>,
+      <>
         {isMixed ? (
           <>
             <Button key="commit-session" variant="primary" onPress={() => commit(true)}>
               {committing ? 'Commit 中…' : `只 Commit 本 session（${sessionCount}）`}
             </Button>
-            <Text> </Text>
             <Button key="commit" onPress={() => commit(false)}>
               {`全部 Commit（${sessionCount + otherCount}）`}
             </Button>
@@ -414,9 +426,8 @@ export const register: Register = on => {
             {committing ? 'Commit 中…' : 'Commit'}
           </Button>
         )}
-        <Text> </Text>
         {skip}
-      </Box>
+      </>,
     )
   })
 }
