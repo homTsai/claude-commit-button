@@ -1,5 +1,8 @@
-/** 等待按下 Commit 的訊息；source 標示是 Claude 回覆附上的，還是按「產生」後由便宜模型寫的 */
-export type Pending = { message: string; source?: 'claude' | 'model' }
+/** 按「產生 commit 訊息」時用的工具：Claude Haiku，或本機的 Cursor CLI（cursor-agent） */
+export type Generator = 'haiku' | 'cursor'
+
+/** 等待按下 Commit 的訊息；source 標示是 Claude 回覆附上的，還是按「產生」後由產生器寫的（by 為哪個產生器） */
+export type Pending = { message: string; source?: 'claude' | 'model'; by?: Generator }
 
 /** 回合結束時的未提交變更：本 session 改過的檔案與其他變更，皆為相對 repo 根目錄的路徑 */
 export type Changes = { session: string[]; others: string[] }

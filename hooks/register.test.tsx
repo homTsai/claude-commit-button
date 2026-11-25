@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { cleanModelMessage, parseStatus, splitChanges, toRepoPath } from './register'
+import { CURSOR_ARGS, cleanModelMessage, cursorArgv, parseStatus, splitChanges, toRepoPath } from './register'
 
 const BAND = { plugin: 'commit-button', surface: 'desktop', component: 'AbovePrompt', props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 4, bodyColumns: 100, scroll: { offset: 0, bodyRows: 4 }, view: {} } } as const
 
@@ -189,5 +189,105 @@ test('沒有建議訊息但本 session 有新變更時，可請 Haiku 產生訊�
   await ui.press({ key: 'commit-session' })
   expect(git.calls.map(c => c.argv)).toContain('git --literal-pathspecs commit -F - -- new.ts')
   expect(git.calls.find(c => c.argv.includes('commit'))?.stdin).toBe('feat: 新增 new.ts\n')
+  await ui.unmount()
+})
+
+test('組出 cursor-agent 的 argv：Windows 的 .cmd 改用同目錄 .ps1，其他平台直接執行', () => {
+  const ps1 = 'C:\\Users\\u\\AppData\\Local\\cursor-agent\\cursor-agent.ps1'
+  expect(cursorArgv('C:\\Users\\u\\AppData\\Local\\cursor-agent\\cursor-agent.cmd\n')).toEqual([
+    'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1, ...CURSOR_ARGS,
+  ])
+  expect(cursorArgv('C:\\tools\\cursor-agent.exe\n')).toEqual(['C:\\tools\\cursor-agent.exe', ...CURSOR_ARGS])
+  expect(cursorArgv(null)).toEqual(['cursor-agent', ...CURSOR_ARGS])
+  expect(cursorArgv('')).toBeNull()
+  // 固定用 auto，不沿用使用者在 Cursor 裡選的模型
+  expect(CURSOR_ARGS.slice(CURSOR_ARGS.indexOf('--model'))).toEqual(['--model', 'auto'])
+})
+
+test('設定為 cursor 時，用 cursor-agent 產生訊息，prompt 從 stdin 傳入', { options: { messageGenerator: 'cursor' } }, async ($, on) => {
+  const repo = { status: ' M old.ts\0' }
+  const git = fakeGit(repo)
+  const runs: Array<{ argv: readonly string[]; stdin?: string }> = []
+  let isModelAsked = false
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', (_, e: { argv: readonly string[]; init?: { stdin?: string } }) => {
+    if (e.argv[0] === 'git') return git.handler(_, e)
+    runs.push({ argv: e.argv, stdin: e.init?.stdin })
+    const stdout = e.argv[0] === 'where.exe' ? 'C:\\cursor-agent\\cursor-agent.cmd\n' : 'feat: 新增 new.ts\n'
+    return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.toast', () => ({ value: undefined }))
+  on('model.complete', () => {
+    isModelAsked = true
+    return { value: { isAnswered: true as const, text: 'x', usage: USAGE } }
+  })
+
+  await $.turn.start({ text: '幫我加檔案', turnId: 't' })
+  repo.status = ' M old.ts\0?? new.ts\0'
+  await $.turn.complete(turn('好了，已新增。'))
+
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Button', key: 'generate' }))?.text).toContain('Cursor')
+  expect((await ui.find({ type: 'Button', key: 'toggle-generator' }))?.text).toContain('改用 Haiku')
+  await ui.press({ key: 'generate' })
+
+  expect(isModelAsked).toBe(false)
+  const agent = runs.find(r => r.argv[0] === 'powershell.exe')
+  expect(agent?.argv).toContain('C:\\cursor-agent\\cursor-agent.ps1')
+  expect(agent?.argv.slice(-2)).toEqual(['--model', 'auto'])
+  expect(agent?.stdin).toContain('You write git commit messages')
+  expect(agent?.stdin).toContain('new.ts')
+  expect((await ui.find({ type: 'Text', text: /Cursor 建議/ }))?.text).toContain('Cursor')
+  expect((await ui.find({ type: 'Text', text: /新增 new\.ts/ }))?.text).toContain('feat:')
+  await ui.unmount()
+})
+
+test('cursor-agent 失敗時顯示錯誤、不產生訊息', { options: { messageGenerator: 'cursor' } }, async ($, on) => {
+  const repo = { status: ' M old.ts\0' }
+  const git = fakeGit(repo)
+  const toasts: string[] = []
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', (_, e: { argv: readonly string[]; init?: { stdin?: string } }) => {
+    if (e.argv[0] === 'git') return git.handler(_, e)
+    const isWhere = e.argv[0] === 'where.exe'
+    return { value: { exitCode: isWhere ? 0 : 1, stdout: isWhere ? 'C:\\c\\cursor-agent.cmd\n' : '', stderr: isWhere ? '' : 'Not logged in', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.toast', (_, e: { text: string }) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+
+  await $.turn.start({ text: 'x', turnId: 't' })
+  repo.status = ' M old.ts\0?? new.ts\0'
+  await $.turn.complete(turn('好了。'))
+  const ui = await $.ui.mount(BAND)
+  await ui.press({ key: 'generate' })
+  expect(toasts.some(t => t.includes('cursor-agent 失敗') && t.includes('Not logged in'))).toBe(true)
+  expect(await ui.find({ type: 'Button', key: 'commit' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('band 上的切換按鈕把設定改成另一個產生器', async ($, on) => {
+  const repo = { status: ' M old.ts\0' }
+  const sets: Array<{ key: string; value: unknown }> = []
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', fakeGit(repo).handler)
+  on('ui.toast', () => ({ value: undefined }))
+  on('config.list', () => ({ value: [{ key: 'theme', label: 'Theme', kind: 'choice', value: 'dark', provider: { plugin: 'engine', tier: 'core' }, isLocked: false }, { key: 'commit-button.messageGenerator', label: '產生 commit 訊息的工具', kind: 'choice', value: 'haiku', options: ['haiku', 'cursor'], provider: { plugin: 'commit-button', tier: 'user' }, isLocked: false }] as never }))
+  on('config.set', (_, e) => {
+    sets.push({ key: e.key, value: e.value })
+    return { value: e.value }
+  })
+
+  await $.turn.start({ text: 'x', turnId: 't' })
+  repo.status = ' M old.ts\0?? new.ts\0'
+  await $.turn.complete(turn('好了。'))
+  const ui = await $.ui.mount(BAND)
+  expect((await ui.find({ type: 'Button', key: 'generate' }))?.text).toContain('Haiku')
+  await ui.press({ key: 'toggle-generator' })
+  expect(sets).toEqual([{ key: 'commit-button.messageGenerator', value: 'cursor' }])
   await ui.unmount()
 })

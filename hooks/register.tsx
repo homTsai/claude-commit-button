@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Hook, Register, RenderChildren } from 'claude-code'
 
-import type { Busy, Changes, Pending } from '../types'
+import type { Busy, Changes, Generator, Pending } from '../types'
 
 /**
  * commit-button：Claude 的回覆含「建議的 commit message」程式碼區塊時，
@@ -10,7 +10,9 @@ import type { Busy, Changes, Pending } from '../types'
  * - 記下本 session 改過的檔案（Edit／Write／NotebookEdit，加上回合前後 git status 的差異），
  *   repo 裡還有其他變更時，可以只提交本 session 的檔案。
  * - Claude 沒附建議訊息、但本 session 有未提交的檔案時，提供「產生 commit 訊息」，
- *   由便宜模型（Haiku）依 diff 寫訊息；git 指令一律由 mod 自己執行，模型只負責寫訊息。
+ *   由便宜模型（Haiku）或本機的 Cursor CLI（cursor-agent，auto 模型）依 diff 寫訊息，
+ *   可在 band 上或設定（userConfig `messageGenerator`）切換；
+ *   git 指令一律由 mod 自己執行，模型只負責寫訊息。
  */
 
 const pending = atom({ plugin: 'commit-button', key: 'pending' } as const, null)
@@ -19,8 +21,17 @@ const touched = atom({ plugin: 'commit-button', key: 'touched' } as const, [])
 const baseline = atom({ plugin: 'commit-button', key: 'baseline' } as const, null)
 const changes = atom({ plugin: 'commit-button', key: 'changes' } as const, null)
 
-/** 產生 commit 訊息用的模型 */
+/** 產生 commit 訊息用的模型（產生器為 haiku 時） */
 export const MESSAGE_MODEL = 'haiku'
+/** 選擇產生器的 userConfig 欄位 */
+const GENERATOR_FIELD = 'messageGenerator'
+export const GENERATOR_NAMES: Record<Generator, string> = { haiku: 'Haiku', cursor: 'Cursor' }
+/**
+ * cursor-agent 的參數：非互動、唯讀（ask 模式）、純文字輸出。
+ * 明確指定 --model auto：不帶的話會沿用使用者在 Cursor 裡目前選的模型。
+ */
+export const CURSOR_ARGS = ['-p', '--mode', 'ask', '--output-format', 'text', '--trust', '--model', 'auto'] as const
+const CURSOR_TIMEOUT_MS = 120000
 /** 送給模型的 diff 上限（字元） */
 const MAX_DIFF_CHARS = 20000
 
@@ -152,7 +163,7 @@ export function buildMessagePrompt(input: { recent: string; stat: string; diff: 
   return sections.filter(Boolean).join('\n\n')
 }
 
-async function generateMessage($: Ctx, paths: readonly string[], entries: readonly StatusEntry[]): Promise<string | { error: string }> {
+async function generateMessage($: Ctx, generator: Generator, paths: readonly string[], entries: readonly StatusEntry[]): Promise<string | { error: string }> {
   const scope = ['--', ...paths]
   const git = (args: string[]) => $.process.run(['git', '--literal-pathspecs', ...args])
   let diff = await git(['diff', 'HEAD', ...scope])
@@ -172,6 +183,7 @@ async function generateMessage($: Ctx, paths: readonly string[], entries: readon
     diff: diff.exitCode === 0 ? diff.stdout : '',
     untracked,
   })
+  if (generator === 'cursor') return askCursor($, prompt)
   const reply = await $.model.complete({ model: MESSAGE_MODEL, system: MESSAGE_SYSTEM, prompt, effort: 'low', maxTokens: 400, timeoutMs: 30000 })
   if (!reply.isAnswered) {
     const why = reply.reason === 'api-error' ? `API 錯誤 ${reply.status ?? ''}`.trim() : reply.reason === 'aborted' ? '逾時或被取消' : '模型沒有回覆內容'
@@ -179,6 +191,47 @@ async function generateMessage($: Ctx, paths: readonly string[], entries: readon
   }
   const message = cleanModelMessage(reply.text)
   return message ? message : { error: '產生 commit 訊息失敗：模型沒有回覆內容' }
+}
+
+/**
+ * 啟動 cursor-agent 的 argv（不經 shell）。
+ * Windows 上 `where cursor-agent` 找到的是 .cmd，改用同目錄的 .ps1 交給 PowerShell 執行，
+ * 參數與 stdin 才能完整傳入；沒有 where.exe（macOS／Linux）就直接執行 cursor-agent。
+ */
+export function cursorArgv(whereOutput: string | null): string[] | null {
+  if (whereOutput === null) return ['cursor-agent', ...CURSOR_ARGS]
+  const found = whereOutput.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+  const cmd = found.find(l => /\.(cmd|bat)$/i.test(l))
+  if (cmd) return ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', cmd.replace(/\.(cmd|bat)$/i, '.ps1'), ...CURSOR_ARGS]
+  const exe = found[0]
+  return exe ? [exe, ...CURSOR_ARGS] : null
+}
+
+/** 用本機的 Cursor CLI 寫訊息：prompt 從 stdin 傳入（diff 很長時不受命令列長度限制） */
+async function askCursor($: Ctx, prompt: string): Promise<string | { error: string }> {
+  const where = await $.process.run(['where.exe', 'cursor-agent']).catch(() => null)
+  const argv = cursorArgv(where === null ? null : where.exitCode === 0 ? where.stdout : '')
+  if (!argv) return { error: '找不到 cursor-agent：請先安裝 Cursor CLI 並執行 cursor-agent login' }
+  const input = `${MESSAGE_SYSTEM}\nDo not use any tools or read any files: everything you need is below.\n\n${prompt}\n`
+  let result: Awaited<ReturnType<Ctx['process']['run']>>
+  try {
+    result = await $.process.run(argv, { stdin: input, timeoutMs: CURSOR_TIMEOUT_MS })
+  } catch (err) {
+    // 無法啟動（沒安裝）或逾時
+    return { error: `執行 cursor-agent 失敗：${firstLine(err instanceof Error ? err.message : String(err), 120)}` }
+  }
+  if (result.exitCode !== 0) return { error: `cursor-agent 失敗：${firstError(result.stderr, result.stdout)}` }
+  const message = cleanModelMessage(result.stdout)
+  return message ? message : { error: '產生 commit 訊息失敗：cursor-agent 沒有回覆內容' }
+}
+
+/** 把 band 上的切換寫進設定（等同在 /config 改），模組會帶著新的 options 重新載入 */
+async function switchGenerator($: Ctx, to: Generator): Promise<string | null> {
+  const rows = await $.config.list()
+  const row = rows.find(r => /^commit-button(@[^.]*)?\./.test(r.key) && r.key.endsWith(`.${GENERATOR_FIELD}`))
+  if (!row) return '找不到 commit-button 的設定欄位'
+  const result = await $.config.set({ key: row.key, value: to })
+  return 'deny' in result && result.deny ? `無法切換：${String(result.deny)}` : null
 }
 
 // ---------- system prompt ----------
@@ -214,7 +267,11 @@ async function addTouched($: Ctx, paths: readonly string[]) {
   })
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  // 設定改變時模組會重新載入，所以這裡讀一次即可
+  const generator: Generator = options[GENERATOR_FIELD] === 'cursor' ? 'cursor' : 'haiku'
+  const other: Generator = generator === 'cursor' ? 'haiku' : 'cursor'
+
   // 請 Claude 以固定格式附上建議的 commit message（不依賴使用者自己的 CLAUDE.md），
   // 並在桌面版不要於下一步提示框重複問 commit
   on('prompt.compose', async ($, e, next) => {
@@ -359,17 +416,23 @@ export const register: Register = on => {
           await dismiss()
           return
         }
-        const made = await generateMessage($, paths, repo.entries)
+        const made = await generateMessage($, generator, paths, repo.entries)
         if (typeof made !== 'string') {
           $.ui.toast(made.error, { timeoutMs: 8000 })
           return
         }
-        await update($, pending, (): Pending => ({ message: made, source: 'model' }))
+        await update($, pending, (): Pending => ({ message: made, source: 'model', by: generator }))
       } catch (err) {
         $.ui.toast(`產生 commit 訊息失敗：${err instanceof Error ? err.message : String(err)}`, { timeoutMs: 8000 })
       } finally {
         await update($, busy, (): Busy => null)
       }
+    }
+
+    const toggle = async () => {
+      if (await read($, busy)) return
+      const error = await switchGenerator($, other).catch((err: unknown) => (err instanceof Error ? err.message : String(err)))
+      $.ui.toast(error ?? `之後改用 ${GENERATOR_NAMES[other]} 產生 commit 訊息`)
     }
 
     const skip = (
@@ -395,14 +458,17 @@ export const register: Register = on => {
         <Text dimColor>本 session 有 {sessionCount} 個檔案未 commit{otherCount ? `（另有 ${otherCount} 個其他變更）` : ''}</Text>,
         <>
           <Button key="generate" variant="primary" onPress={generate}>
-            {state === 'generate' ? '產生中…' : '產生 commit 訊息'}
+            {state === 'generate' ? `${GENERATOR_NAMES[generator]} 產生中…` : `用 ${GENERATOR_NAMES[generator]} 產生 commit 訊息`}
+          </Button>
+          <Button key="toggle-generator" onPress={toggle}>
+            {`改用 ${GENERATOR_NAMES[other]}`}
           </Button>
           {skip}
         </>,
       )
     }
 
-    const label = current.source === 'model' ? 'Haiku 建議 commit：' : '建議 commit：'
+    const label = current.source === 'model' ? `${GENERATOR_NAMES[current.by ?? 'haiku']} 建議 commit：` : '建議 commit：'
     const isMixed = sessionCount > 0 && otherCount > 0
     const committing = state === 'commit'
 

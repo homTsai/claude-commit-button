@@ -1,10 +1,22 @@
 {
   "name": "commit-button",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "在提示框上方顯示 Claude 建議的 commit message，按一下即 git add -A + git commit，不經過模型",
   "types": "./types/index.d.ts",
   "license": "MIT",
   "author": {
     "name": "homTsai"
+  },
+  "userConfig": {
+    "messageGenerator": {
+      "type": "string",
+      "title": "產生 commit 訊息的工具",
+      "description": "haiku：Claude Haiku；cursor：本機的 Cursor CLI（cursor-agent，auto 模型）",
+      "options": [
+        "haiku",
+        "cursor"
+      ],
+      "default": "haiku"
+    }
   }
 }
