@@ -359,3 +359,48 @@ test('設定為 cursor 但找不到 cursor-agent 時，只提供「改用 Haiku�
   expect((await ui.find({ type: 'Text', text: /找不到 cursor-agent/ }))?.text).toContain('1 個檔案')
   await ui.unmount()
 })
+
+test('右側按鈕列的按鈕直接放在 row Box 內，不被 Fragment 包成 column Box', async ($, on) => {
+  const repo = { status: ' M a.ts\0' }
+  on('tool.call', () => ({ result: {} as never }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', (_, e) => ({ text: e.answer }))
+  on('process.run', fakeGit(repo).handler)
+
+  const assertRowButtons = async (expectedKeys: string[]) => {
+    const ui = await $.ui.mount(BAND)
+    const root = await ui.drawn()
+    expect(root.type).toBe('Box')
+    if (root.type !== 'Box') throw new Error('預期根節點為 Box')
+    expect(root.props?.flexDirection).toBe('row')
+    const children = root.children ?? []
+    expect(children).toHaveLength(2)
+    const actionsBox = children[1]
+    expect(typeof actionsBox === 'object' && actionsBox !== null && actionsBox.type === 'Box').toBe(true)
+    if (typeof actionsBox !== 'object' || actionsBox === null || actionsBox.type !== 'Box') {
+      throw new Error('預期右側為 Box')
+    }
+    expect(actionsBox.props?.flexDirection).toBe('row')
+    const actionChildren = actionsBox.children ?? []
+    expect(actionChildren.every(c => typeof c === 'object' && c !== null && c.type === 'Button')).toBe(true)
+    expect(actionChildren.map(c => (typeof c === 'object' && c !== null && c.type === 'Button' ? c.props.key : null))).toEqual(expectedKeys)
+    await ui.unmount()
+  }
+
+  // 1. 無建議訊息（產生按鈕）
+  await $.turn.start({ text: '改檔', turnId: 't1' })
+  repo.status = ' M a.ts\0?? new.ts\0'
+  await $.turn.complete(turn('好了。'))
+  await assertRowButtons(['generate', 'toggle-generator', 'dismiss'])
+
+  // 2. 一般建議訊息（單一 Commit 按鈕）
+  repo.status = ' M new.ts\0'
+  await $.turn.complete(turn(ANSWER))
+  await assertRowButtons(['commit', 'dismiss'])
+
+  // 3. 混合變更（isMixed：只 Commit 本 session + 全部 Commit）
+  await $.tool.call({ tool: 'Edit', tool_use_id: 'u1', file_path: 'D:\\repo\\a.ts', old_string: 'x', new_string: 'y' } as never)
+  repo.status = ' M a.ts\0 M other.ts\0'
+  await $.turn.complete(turn(ANSWER))
+  await assertRowButtons(['commit-session', 'commit', 'dismiss'])
+})

@@ -460,18 +460,18 @@ export const register: Register = (on, options) => {
     }
 
     const skip = (
-      <Button key="dismiss" role="dismiss" onPress={dismiss}>
+      <Button key="dismiss" onPress={dismiss}>
         略過
       </Button>
     )
 
-    /** 文字靠左、按鈕靠右；視窗太窄時文字先縮，按鈕保持完整 */
+    /** 文字靠左、按鈕靠右；視窗太窄時文字先縮，按鈕保持完整（actions 須傳陣列而非 Fragment，避免被包成 column Box） */
     const row = (info: RenderChildren, actions: RenderChildren) => (
       <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1}>
-        <Box flexGrow={1} flexShrink={1}>
+        <Box flexDirection="column" flexGrow={1} flexShrink={1}>
           {info}
         </Box>
-        <Box flexShrink={0} columnGap={1}>
+        <Box flexDirection="row" flexShrink={0} alignItems="center" columnGap={1}>
           {actions}
         </Box>
       </Box>
@@ -486,12 +486,12 @@ export const register: Register = (on, options) => {
       if (generator === 'cursor' && isCursorMissing) {
         return row(
           <Text dimColor>{`${summary}・找不到 cursor-agent`}</Text>,
-          <>
+          [
             <Button key="toggle-generator" variant="primary" onPress={toggle}>
               改用 Haiku
-            </Button>
-            {skip}
-          </>,
+            </Button>,
+            skip,
+          ],
         )
       }
 
@@ -509,35 +509,33 @@ export const register: Register = (on, options) => {
         )
       }
       actions.push(skip)
-      return row(<Text dimColor>{summary}</Text>, <>{actions}</>)
+      return row(<Text dimColor>{summary}</Text>, actions)
     }
 
     const label = current.source === 'model' ? `${GENERATOR_NAMES[current.by ?? 'haiku']} 建議 commit：` : '建議 commit：'
     const isMixed = sessionCount > 0 && otherCount > 0
     const committing = state === 'commit'
 
-    return row(
-      <>
-        <Text dimColor>{label}</Text>
-        <Text>{firstLine(current.message)}</Text>
-      </>,
-      <>
-        {isMixed ? (
-          <>
-            <Button key="commit-session" variant="primary" onPress={() => commit(true)}>
-              {committing ? 'Commit 中…' : `只 Commit 本 session（${sessionCount}）`}
-            </Button>
-            <Button key="commit" onPress={() => commit(false)}>
-              {`全部 Commit（${sessionCount + otherCount}）`}
-            </Button>
-          </>
-        ) : (
+    const commitActions: RenderNode[] = isMixed
+      ? [
+          <Button key="commit-session" variant="primary" onPress={() => commit(true)}>
+            {committing ? 'Commit 中…' : `只 Commit 本 session（${sessionCount}）`}
+          </Button>,
+          <Button key="commit" onPress={() => commit(false)}>
+            {`全部 Commit（${sessionCount + otherCount}）`}
+          </Button>,
+          skip,
+        ]
+      : [
           <Button key="commit" variant="primary" onPress={() => commit(false)}>
             {committing ? 'Commit 中…' : 'Commit'}
-          </Button>
-        )}
-        {skip}
-      </>,
+          </Button>,
+          skip,
+        ]
+
+    return row(
+      [<Text dimColor>{label}</Text>, <Text>{firstLine(current.message)}</Text>],
+      commitActions,
     )
   })
 }
