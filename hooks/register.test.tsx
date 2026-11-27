@@ -360,7 +360,7 @@ test('設定為 cursor 但找不到 cursor-agent 時，只提供「改用 Haiku�
   await ui.unmount()
 })
 
-test('右側按鈕列的按鈕直接放在 row Box 內，不被 Fragment 包成 column Box', async ($, on) => {
+test('按鈕列橫向排列且窄螢幕可自動換行，按鈕直接放在 row Box 內', async ($, on) => {
   const repo = { status: ' M a.ts\0' }
   on('tool.call', () => ({ result: {} as never }))
   on('turn.start', (_, e) => ({ turnId: e.turnId }))
@@ -373,6 +373,8 @@ test('右側按鈕列的按鈕直接放在 row Box 內，不被 Fragment 包成 
     expect(root.type).toBe('Box')
     if (root.type !== 'Box') throw new Error('預期根節點為 Box')
     expect(root.props?.flexDirection).toBe('row')
+    expect(root.props?.flexWrap).toBe('wrap')
+    expect(root.props?.rowGap).toBe('sm')
     const children = root.children ?? []
     expect(children).toHaveLength(2)
     const actionsBox = children[1]
@@ -381,6 +383,9 @@ test('右側按鈕列的按鈕直接放在 row Box 內，不被 Fragment 包成 
       throw new Error('預期右側為 Box')
     }
     expect(actionsBox.props?.flexDirection).toBe('row')
+    expect(actionsBox.props?.flexWrap).toBe('wrap')
+    expect(actionsBox.props?.rowGap).toBe('xs')
+    expect(actionsBox.props?.flexShrink).not.toBe(0)
     const actionChildren = actionsBox.children ?? []
     expect(actionChildren.every(c => typeof c === 'object' && c !== null && c.type === 'Button')).toBe(true)
     expect(actionChildren.map(c => (typeof c === 'object' && c !== null && c.type === 'Button' ? c.props.key : null))).toEqual(expectedKeys)

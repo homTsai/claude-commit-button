@@ -465,13 +465,13 @@ export const register: Register = (on, options) => {
       </Button>
     )
 
-    /** 文字靠左、按鈕靠右；視窗太窄時文字先縮，按鈕保持完整（actions 須傳陣列而非 Fragment，避免被包成 column Box） */
+    /** 文字靠左、按鈕靠右；空間不足時按鈕整組換到第二行，極窄時按鈕列本身也能換行（actions 須傳陣列而非 Fragment，避免被包成 column Box） */
     const row = (info: RenderChildren, actions: RenderChildren) => (
-      <Box flexDirection="row" justifyContent="space-between" alignItems="center" columnGap={1}>
+      <Box flexDirection="row" flexWrap="wrap" justifyContent="space-between" alignItems="center" columnGap={1} rowGap="sm">
         <Box flexDirection="column" flexGrow={1} flexShrink={1}>
           {info}
         </Box>
-        <Box flexDirection="row" flexShrink={0} alignItems="center" columnGap={1}>
+        <Box flexDirection="row" flexWrap="wrap" alignItems="center" columnGap={1} rowGap="xs">
           {actions}
         </Box>
       </Box>
